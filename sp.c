@@ -133,8 +133,8 @@ static void dump_sram(sp_t *sp)
 	fclose(fp);
 }
 
-
-void print_trace(sp_registers_t *spro) {
+// dump command trace contents
+void print_trace(sp_registers_t *spro, int loaded) {
     // print header
     fprintf(stream, "--- instruction %d (%04x) @ PC %d (%04x) -----------------------------------------------------------\n",
             spro->cycle_counter/6-1, spro->cycle_counter/6-1, spro->pc, spro->pc);
@@ -155,9 +155,40 @@ void print_trace(sp_registers_t *spro) {
     }
     fprintf(stream, "\n");
 
+    // print operation summary
+    switch (spro->opcode) {
+        case ADD:
+        case SUB:
+        case LSF:
+        case RSF:
+        case AND:
+        case OR:
+        case XOR:
+            fprintf(stream, ">>>> EXEC: R[%d] = %d %s %d <<<<\n\n", spro->dst, spro->alu0, opcode_name[spro->opcode], spro->alu1);
+            break;
+        case LHI:
+            fprintf(stream, ">>>> EXEC: R[%d][31:16] = immediate[15:0] <<<<\n\n", spro->dst);
+            break;
+        case LD:
+            fprintf(stream, ">>>> EXEC: R[%d] = MEM[%d] = %08x <<<<\n\n", spro->dst, (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), loaded);
+            break;
+        case ST:
+            fprintf(stream, ">>>> EXEC: MEM[%d] = R[%d] = %08x <<<<\n\n", (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), spro->src0, spro->r[spro->src0]);
+            break;
+        case JLT:
+        case JLE:
+        case JEQ:
+        case JNE:
+            fprintf(stream, ">>>> EXEC: %s %d, %d, %d <<<<\n\n", opcode_name[spro->opcode], spro->alu0, spro->alu1, (btaken ? spro->immediate : spro->pc + 1));
+            break;
+        case JIN:
+            fprintf(stream, ">>>> EXEC: JIN %d <<<<\n\n", spro->immediate);
+            break;
+        case HLT:
+            fprintf(stream, ">>>> EXEC: HALT at PC %04x<<<<\n", spro->pc);
+            break;
+    }
 }
-
-
 
 static void sp_ctl(sp_t *sp)
 {
@@ -196,7 +227,6 @@ static void sp_ctl(sp_t *sp)
 
 	case CTL_STATE_FETCH0:
         btaken = 0;
-//        getchar();
 
         // issue read command to memory to fetch the current instruction from address PC
         llsim_mem_read(sp->sram, spro->pc);
@@ -338,8 +368,8 @@ static void sp_ctl(sp_t *sp)
                 sprn->r[spro->dst] =  llsim_mem_extract_dataout(sp->sram, 31, 0);
                 break;
             case ST:
-                llsim_mem_set_datain(sp->sram, spro->src0, 31, 0);
-                llsim_mem_write(sp->sram, spro->src1);
+                llsim_mem_set_datain(sp->sram, spro->alu0, 31, 0);
+                llsim_mem_write(sp->sram, spro->alu1);
                 break;
             case JLT:
             case JLE:
@@ -364,7 +394,7 @@ static void sp_ctl(sp_t *sp)
             sprn->pc = sprn->pc + 1;
         }
 
-        print_trace(spro);
+        print_trace(spro, sprn->r[spro->dst]);
 
         // proceed to next state (depending on opcode)
         sprn->ctl_state = (spro->opcode == HLT ? CTL_STATE_IDLE : CTL_STATE_FETCH0);
