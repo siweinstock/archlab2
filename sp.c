@@ -115,6 +115,9 @@ static char opcode_name[32][4] = {"ADD", "SUB", "LSF", "RSF", "AND", "OR", "XOR"
 				 "JLT", "JLE", "JEQ", "JNE", "JIN", "U", "U", "U",
 				 "HLT", "U", "U", "U", "U", "U", "U", "U"};
 
+FILE* stream;
+int btaken; // control bit to indicate if branch is taken
+
 static void dump_sram(sp_t *sp)
 {
 	FILE *fp;
@@ -129,6 +132,31 @@ static void dump_sram(sp_t *sp)
 		fprintf(fp, "%08x\n", llsim_mem_extract(sp->sram, i, 31, 0));
 	fclose(fp);
 }
+
+
+void print_trace(sp_registers_t *spro) {
+    // print header
+    fprintf(stream, "--- instruction %d (%04x) @ PC %d (%04x) -----------------------------------------------------------\n",
+            spro->cycle_counter/6-1, spro->cycle_counter/6-1, spro->pc, spro->pc);
+    fprintf(stream, "pc = %04d, ", spro->pc);
+    fprintf(stream, "inst = %08x, ", spro->inst);
+    fprintf(stream, "opcode = %d (%s), ", spro->opcode, opcode_name[spro->opcode]);
+    fprintf(stream, "dst = %d, ", spro->dst);
+    fprintf(stream, "src0 = %d, ", spro->src0);
+    fprintf(stream, "src1 = %d, ", spro->src1);
+    fprintf(stream, "immediate = %08x\n", spro->immediate);
+
+    // print register content
+    fprintf(stream, "r[0] = 00000000 ");
+    fprintf(stream, "r[1] = %08x ", spro->immediate);
+    for (int i=2; i<8; i++) {
+        fprintf(stream, "r[%d] = %08x ", i, spro->r[i]);
+        if ((i+1) % (8/2) == 0) fprintf(stream, "\n");
+    }
+    fprintf(stream, "\n");
+
+}
+
 
 
 static void sp_ctl(sp_t *sp)
@@ -167,6 +195,9 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_FETCH0:
+        btaken = 0;
+//        getchar();
+
         // issue read command to memory to fetch the current instruction from address PC
         llsim_mem_read(sp->sram, spro->pc);
 
@@ -184,14 +215,14 @@ static void sp_ctl(sp_t *sp)
 
 	case CTL_STATE_DEC0:
         // parse operation
-        sprn->opcode = (spro->opcode >> 25) & 0x1f;
-        sprn->dst = (spro->dst >> 22) & 0x7;
-        sprn->src0 = (spro->src0 >> 19) & 0x7;
-        sprn->src1 = (spro->src1 >> 16) & 0x7;
-        sprn->immediate = spro->immediate & 0xffff;
+        sprn->opcode = (spro->inst >> 25) & 0x1f;
+        sprn->dst = (spro->inst >> 22) & 0x7;
+        sprn->src0 = (spro->inst >> 19) & 0x7;
+        sprn->src1 = (spro->inst >> 16) & 0x7;
+        sprn->immediate = spro->inst & 0xffff;
 
         // sign extend immediate
-        sprn->immediate += (int)((spro->immediate & 0x8000) ? 0xffff0000 : 0x0);
+        sprn->immediate += (int)((sprn->immediate & 0x8000) ? 0xffff0000 : 0x0);
 
         // proceed to next state
         sprn->ctl_state = CTL_STATE_DEC1;
@@ -301,7 +332,7 @@ static void sp_ctl(sp_t *sp)
             case OR:
             case XOR:
             case LHI:
-                sprn->r[spro->dst] = sprn->aluout;
+                sprn->r[spro->dst] = spro->aluout;
                 break;
             case LD:
                 sprn->r[spro->dst] =  llsim_mem_extract_dataout(sp->sram, 31, 0);
@@ -316,6 +347,7 @@ static void sp_ctl(sp_t *sp)
             case JNE:
             case JIN:
                 if (spro->aluout == 1) {
+                    btaken = 1;
                     sprn->pc = spro->immediate;
                     sprn->r[7] = spro->pc;
                 }
@@ -326,6 +358,13 @@ static void sp_ctl(sp_t *sp)
                 llsim_stop();
                 break;
         }
+
+        // increment pc when not branching
+        if (!btaken) {
+            sprn->pc = sprn->pc + 1;
+        }
+
+        print_trace(spro);
 
         // proceed to next state (depending on opcode)
         sprn->ctl_state = (spro->opcode == HLT ? CTL_STATE_IDLE : CTL_STATE_FETCH0);
@@ -408,6 +447,8 @@ void sp_init(char *program_name)
 	llsim_unit_t *llsim_sp_unit;
 	llsim_unit_registers_t *llsim_ur;
 	sp_t *sp;
+
+    stream = stdout;
 
 	llsim_printf("initializing sp unit\n");
 
