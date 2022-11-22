@@ -115,7 +115,6 @@ static char opcode_name[32][4] = {"ADD", "SUB", "LSF", "RSF", "AND", "OR", "XOR"
 				 "JLT", "JLE", "JEQ", "JNE", "JIN", "U", "U", "U",
 				 "HLT", "U", "U", "U", "U", "U", "U", "U"};
 
-FILE* stream;
 int btaken; // control bit to indicate if branch is taken
 
 static void dump_sram(sp_t *sp)
@@ -136,24 +135,24 @@ static void dump_sram(sp_t *sp)
 // dump command trace contents
 void print_trace(sp_registers_t *spro, int loaded) {
     // print header
-    fprintf(stream, "--- instruction %d (%04x) @ PC %d (%04x) -----------------------------------------------------------\n",
+    fprintf(inst_trace_fp, "--- instruction %d (%04x) @ PC %d (%04x) -----------------------------------------------------------\n",
             spro->cycle_counter/6-1, spro->cycle_counter/6-1, spro->pc, spro->pc);
-    fprintf(stream, "pc = %04d, ", spro->pc);
-    fprintf(stream, "inst = %08x, ", spro->inst);
-    fprintf(stream, "opcode = %d (%s), ", spro->opcode, opcode_name[spro->opcode]);
-    fprintf(stream, "dst = %d, ", spro->dst);
-    fprintf(stream, "src0 = %d, ", spro->src0);
-    fprintf(stream, "src1 = %d, ", spro->src1);
-    fprintf(stream, "immediate = %08x\n", spro->immediate);
+    fprintf(inst_trace_fp, "pc = %04d, ", spro->pc);
+    fprintf(inst_trace_fp, "inst = %08x, ", spro->inst);
+    fprintf(inst_trace_fp, "opcode = %d (%s), ", spro->opcode, opcode_name[spro->opcode]);
+    fprintf(inst_trace_fp, "dst = %d, ", spro->dst);
+    fprintf(inst_trace_fp, "src0 = %d, ", spro->src0);
+    fprintf(inst_trace_fp, "src1 = %d, ", spro->src1);
+    fprintf(inst_trace_fp, "immediate = %08x\n", spro->immediate);
 
     // print register content
-    fprintf(stream, "r[0] = 00000000 ");
-    fprintf(stream, "r[1] = %08x ", spro->immediate);
+    fprintf(inst_trace_fp, "r[0] = 00000000 ");
+    fprintf(inst_trace_fp, "r[1] = %08x ", spro->immediate);
     for (int i=2; i<8; i++) {
-        fprintf(stream, "r[%d] = %08x ", i, spro->r[i]);
-        if ((i+1) % (8/2) == 0) fprintf(stream, "\n");
+        fprintf(inst_trace_fp, "r[%d] = %08x ", i, spro->r[i]);
+        if ((i+1) % (8/2) == 0) fprintf(inst_trace_fp, "\n");
     }
-    fprintf(stream, "\n");
+    fprintf(inst_trace_fp, "\n");
 
     // print operation summary
     switch (spro->opcode) {
@@ -164,28 +163,28 @@ void print_trace(sp_registers_t *spro, int loaded) {
         case AND:
         case OR:
         case XOR:
-            fprintf(stream, ">>>> EXEC: R[%d] = %d %s %d <<<<\n\n", spro->dst, spro->alu0, opcode_name[spro->opcode], spro->alu1);
+            fprintf(inst_trace_fp, ">>>> EXEC: R[%d] = %d %s %d <<<<\n\n", spro->dst, spro->alu0, opcode_name[spro->opcode], spro->alu1);
             break;
         case LHI:
-            fprintf(stream, ">>>> EXEC: R[%d][31:16] = immediate[15:0] <<<<\n\n", spro->dst);
+            fprintf(inst_trace_fp, ">>>> EXEC: R[%d][31:16] = immediate[15:0] <<<<\n\n", spro->dst);
             break;
         case LD:
-            fprintf(stream, ">>>> EXEC: R[%d] = MEM[%d] = %08x <<<<\n\n", spro->dst, (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), loaded);
+            fprintf(inst_trace_fp, ">>>> EXEC: R[%d] = MEM[%d] = %08x <<<<\n\n", spro->dst, (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), loaded);
             break;
         case ST:
-            fprintf(stream, ">>>> EXEC: MEM[%d] = R[%d] = %08x <<<<\n\n", (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), spro->src0, spro->r[spro->src0]);
+            fprintf(inst_trace_fp, ">>>> EXEC: MEM[%d] = R[%d] = %08x <<<<\n\n", (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), spro->src0, spro->r[spro->src0]);
             break;
         case JLT:
         case JLE:
         case JEQ:
         case JNE:
-            fprintf(stream, ">>>> EXEC: %s %d, %d, %d <<<<\n\n", opcode_name[spro->opcode], spro->alu0, spro->alu1, (btaken ? spro->immediate : spro->pc + 1));
+            fprintf(inst_trace_fp, ">>>> EXEC: %s %d, %d, %d <<<<\n\n", opcode_name[spro->opcode], spro->alu0, spro->alu1, (btaken ? spro->immediate : spro->pc + 1));
             break;
         case JIN:
-            fprintf(stream, ">>>> EXEC: JIN %d <<<<\n\n", spro->immediate);
+            fprintf(inst_trace_fp, ">>>> EXEC: JIN %d <<<<\n\n", spro->immediate);
             break;
         case HLT:
-            fprintf(stream, ">>>> EXEC: HALT at PC %04x<<<<\n", spro->pc);
+            fprintf(inst_trace_fp, ">>>> EXEC: HALT at PC %04x<<<<\n", spro->pc);
             break;
     }
 }
@@ -395,8 +394,12 @@ static void sp_ctl(sp_t *sp)
         }
 
         print_trace(spro, sprn->r[spro->dst]);
+        if (sprn->opcode == HLT) {
+            fprintf(inst_trace_fp, "sim finished at pc %d, %d instructions", spro->pc, spro->cycle_counter/6);
+            fclose(inst_trace_fp);
+        }
 
-        // proceed to next state (depending on opcode)
+            // proceed to next state (depending on opcode)
         sprn->ctl_state = (spro->opcode == HLT ? CTL_STATE_IDLE : CTL_STATE_FETCH0);
 		break;
 
@@ -477,8 +480,6 @@ void sp_init(char *program_name)
 	llsim_unit_t *llsim_sp_unit;
 	llsim_unit_registers_t *llsim_ur;
 	sp_t *sp;
-
-    stream = stdout;
 
 	llsim_printf("initializing sp unit\n");
 
