@@ -17,6 +17,25 @@
 int nr_simulated_instructions = 0;
 FILE *inst_trace_fp = NULL, *cycle_trace_fp = NULL;
 
+
+/*
+ * DMA structure
+ */
+typedef struct dma_s {
+    int src;            // source address
+    int dst;            // destination address
+    int len;            // total number of blocks to copy
+//    int copied;    // number of blocks to copied so far
+    int state;          // DMA's FSM current state
+
+    // control states
+#define DMA_STATE_IDLE		0
+#define DMA_STATE_FETCH		1
+#define DMA_STATE_WAIT	    2
+#define DMA_STATE_COPY	    3
+
+} dma_t;
+
 typedef struct sp_registers_s {
 	// 6 32 bit registers (r[0], r[1] don't exist)
 	int r[8];
@@ -79,8 +98,16 @@ typedef struct sp_s {
 	int memory_image_size;
 
 	sp_registers_t *spro, *sprn;
+
+    // DMA
+    dma_t* dma;
 	
 	int start;
+
+    // DMA control signals
+    int dma_start;  // "kick" to trigger DMA activation
+    int dma_busy;   // is DMA currently busy
+    int mem_busy;   // is SRAM currently busy
 } sp_t;
 
 static void sp_reset(sp_t *sp)
@@ -103,6 +130,8 @@ static void sp_reset(sp_t *sp)
 #define LHI 7
 #define LD 8
 #define ST 9
+#define CPY 10
+#define POL 11
 #define JLT 16
 #define JLE 17
 #define JEQ 18
@@ -111,7 +140,7 @@ static void sp_reset(sp_t *sp)
 #define HLT 24
 
 static char opcode_name[32][4] = {"ADD", "SUB", "LSF", "RSF", "AND", "OR", "XOR", "LHI",
-				 "LD", "ST", "U", "U", "U", "U", "U", "U",
+				 "LD", "ST", "CPY", "POL", "U", "U", "U", "U",
 				 "JLT", "JLE", "JEQ", "JNE", "JIN", "U", "U", "U",
 				 "HLT", "U", "U", "U", "U", "U", "U", "U"};
 
@@ -174,6 +203,12 @@ void print_trace(sp_registers_t *spro, int loaded) {
         case ST:
             fprintf(inst_trace_fp, ">>>> EXEC: MEM[%d] = R[%d] = %08x <<<<\n\n", (spro->src1 == 1 ? spro->immediate : spro->r[spro->src1]), spro->src0, spro->r[spro->src0]);
             break;
+        case CPY:
+            // TODO
+            break;
+        case POL:
+            // TODO
+            break;
         case JLT:
         case JLE:
         case JEQ:
@@ -186,6 +221,58 @@ void print_trace(sp_registers_t *spro, int loaded) {
         case HLT:
             fprintf(inst_trace_fp, ">>>> EXEC: HALT at PC %04x<<<<\n", spro->pc);
             break;
+    }
+}
+
+void dma_ctl(sp_t *sp) {
+    sp_registers_t *spro = sp->spro;
+    sp_registers_t *sprn = sp->sprn;
+
+    int dataout;
+
+    switch (sp->dma->state) {
+        case DMA_STATE_IDLE:
+            sp->dma_busy = 0;
+
+            if (sp->dma_start) {
+                sp->dma->state = DMA_STATE_FETCH;
+                sp->dma_busy = 1;
+            }
+            break;
+        case DMA_STATE_FETCH:
+            // read next address if SRAM is free
+            if (!sp->mem_busy)
+                llsim_mem_read(sp->sram, sp->dma->src);
+
+            // proceed to next state (WAIT if SRAM is busy otherwise COPY)
+            sp->dma->state = (sp->mem_busy ? DMA_STATE_WAIT : DMA_STATE_COPY);
+            break;
+        case DMA_STATE_WAIT:
+            // proceed to next state (WAIT if SRAM is still busy, otherwise FETCH)
+            sp->dma->state = (sp->mem_busy ? DMA_STATE_WAIT : DMA_STATE_FETCH);
+            break;
+        case DMA_STATE_COPY:
+            // copy current address from SRAM to DMA's destination
+            dataout = llsim_mem_extract_dataout(sp->sram, 31, 0);
+            llsim_mem_set_datain(sp->sram, dataout, 31, 0);
+            llsim_mem_write(sp->sram, sp->dma->dst);
+
+            // advance pointers to next address
+//            sprn->dma->copied = spro->dma->copied + 1;
+            sp->dma->src = sp->dma->src + 1;
+            sp->dma->dst = sp->dma->dst + 1;
+            sp->dma->len = sp->dma->len - 1;
+
+            // deactivate DMA upon completion
+            if (sp->dma->len == 0) {
+                sp->dma_start = 0;
+            }
+
+            // proceed to next state (IDLE if completed, otherwise FETCH)
+            sp->dma->state = (sp->dma->len == 0 ? DMA_STATE_IDLE : DMA_STATE_FETCH);
+
+            break;
+
     }
 }
 
@@ -226,6 +313,8 @@ static void sp_ctl(sp_t *sp)
 
 	case CTL_STATE_FETCH0:
         btaken = 0;
+        sp->mem_busy = 1;
+        dma_ctl(sp);
 
         // issue read command to memory to fetch the current instruction from address PC
         llsim_mem_read(sp->sram, spro->pc);
@@ -235,6 +324,9 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_FETCH1:
+        sp->mem_busy = 0;
+        dma_ctl(sp);
+
         // sample memory output to the inst register
         sprn->inst = llsim_mem_extract_dataout(sp->sram, 31, 0);
 
@@ -243,6 +335,9 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_DEC0:
+        sp->mem_busy = 0;
+        dma_ctl(sp);
+
         // parse operation
         sprn->opcode = (spro->inst >> 25) & 0x1f;
         sprn->dst = (spro->inst >> 22) & 0x7;
@@ -258,6 +353,14 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_DEC1:
+        sp->mem_busy = spro->opcode == LD ? 1 : 0;
+
+        if (spro->opcode == CPY && !sp->dma_start) {
+            sp->dma_start = 1;
+        }
+
+        dma_ctl(sp);
+
         // TODO: assert spro->src0 is in valid range ???
         switch (spro->src0) {
             case 0:
@@ -295,6 +398,8 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_EXEC0:
+        sp->mem_busy = (spro->opcode == LD || spro->opcode == ST) ? 1 : 0;
+        dma_ctl(sp);
 
         switch (spro->opcode) {
             case ADD:
@@ -351,6 +456,8 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_EXEC1:
+        sp->mem_busy = 0; // TODO
+        dma_ctl(sp);
 
         switch (spro->opcode) {
             case ADD:
@@ -369,6 +476,19 @@ static void sp_ctl(sp_t *sp)
             case ST:
                 llsim_mem_set_datain(sp->sram, spro->alu0, 31, 0);
                 llsim_mem_write(sp->sram, spro->alu1);
+                break;
+            case CPY:
+                sp->dma->dst = spro->r[spro->dst];  // TODO
+                sp->dma->src = spro->alu0;
+                sp->dma->len = spro->alu1;
+
+                // TODO: here?
+                sp->dma_start = 1;
+                dma_ctl(sp);
+
+                break;
+            case POL:
+                sprn->r[spro->dst] = sp->dma_busy;
                 break;
             case JLT:
             case JLE:
@@ -508,4 +628,6 @@ void sp_init(char *program_name)
 	sp->start = 1;
 
 	sp_register_all_registers(sp);
+
+    sp->dma = (dma_t*) calloc(sizeof(dma_t),sizeof(char ));
 }
