@@ -1,0 +1,18 @@
+Q1
+1) r[4]=12+45=57
+   r[5]=45-r[4]= 45-57=-12
+   r[2]=12, r[3]=45 unchanged
+2) you can only write to new register and read from ole register, in the following code there is an attempt to read from a new register and write to an old register.
+
+Q2
+
+1) It will take 6n clock cycles to execute n instructions because each instructions is executed by going through all states in the state machine.
+2) Theoretically, it is possible to design it so that all stages happen in the same clock cycle, and this way it would support memory access at every click cycle.
+Of course this is not a good solution because it would make the clock cycle 6 times longer. In the proposed solution memory access at every clock cycle is not supported, every reading from memory takes at least 2 clock cycles and they dont happen paralelly.
+3) Adventages:
+Easy to implement
+No hazards that occure from pipelining and dependencies between differen instructions
+Disadventages:
+At any point of time, only a 1/6 of the cpu is actively processing data
+Some instructions dont require all 6 states and still are being executed in 6 clock cycles each.
+
