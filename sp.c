@@ -25,7 +25,6 @@ typedef struct dma_s {
     int src;            // source address
     int dst;            // destination address
     int len;            // total number of blocks to copy
-//    int copied;    // number of blocks to copied so far
     int state;          // DMA's FSM current state
 
     // control states
@@ -456,7 +455,7 @@ static void sp_ctl(sp_t *sp)
 		break;
 
 	case CTL_STATE_EXEC1:
-        sp->mem_busy = 0; // TODO
+        sp->mem_busy = 0;
         dma_ctl(sp);
 
         switch (spro->opcode) {
@@ -478,14 +477,9 @@ static void sp_ctl(sp_t *sp)
                 llsim_mem_write(sp->sram, spro->alu1);
                 break;
             case CPY:
-                sp->dma->dst = spro->r[spro->dst];  // TODO
+                sp->dma->dst = spro->r[spro->dst];
                 sp->dma->src = spro->alu0;
                 sp->dma->len = spro->alu1;
-
-                // TODO: here?
-                sp->dma_start = 1;
-                dma_ctl(sp);
-
                 break;
             case POL:
                 sprn->r[spro->dst] = sp->dma_busy;
